@@ -1,6 +1,7 @@
 import os
 import asyncio
 import threading
+import time
 
 import telebot
 from telebot import types
@@ -10,6 +11,7 @@ from telethon.errors import (
     SessionPasswordNeededError,
     FloodWaitError
 )
+
 from telethon.tl.types import (
     ChannelParticipantAdmin,
     ChannelParticipantCreator
@@ -24,18 +26,19 @@ API_ID = int(os.getenv("API_ID", "0"))
 API_HASH = os.getenv("API_HASH", "").strip()
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 
+
 if not API_ID:
-    raise RuntimeError("API_ID غير موجود")
+    raise RuntimeError("❌ API_ID غير موجود في Environment Variables")
 
 if not API_HASH:
-    raise RuntimeError("API_HASH غير موجود")
+    raise RuntimeError("❌ API_HASH غير موجود في Environment Variables")
 
 if not BOT_TOKEN:
-    raise RuntimeError("BOT_TOKEN غير موجود")
+    raise RuntimeError("❌ BOT_TOKEN غير موجود في Environment Variables")
 
 
 # =========================================================
-# BOT
+# TELEGRAM BOT
 # =========================================================
 
 bot = telebot.TeleBot(
@@ -45,22 +48,32 @@ bot = telebot.TeleBot(
 
 
 # =========================================================
-# TELETHON
+# TELETHON EVENT LOOP
 # =========================================================
 
 telegram_loop = asyncio.new_event_loop()
 
 
 def telegram_worker():
-    asyncio.set_event_loop(telegram_loop)
+
+    asyncio.set_event_loop(
+        telegram_loop
+    )
+
     telegram_loop.run_forever()
 
 
-threading.Thread(
+telegram_thread = threading.Thread(
     target=telegram_worker,
     daemon=True
-).start()
+)
 
+telegram_thread.start()
+
+
+# =========================================================
+# USER SESSION
+# =========================================================
 
 client = TelegramClient(
     "user_session",
@@ -70,6 +83,7 @@ client = TelegramClient(
 
 
 def run_async(coro):
+
     future = asyncio.run_coroutine_threadsafe(
         coro,
         telegram_loop
@@ -79,10 +93,15 @@ def run_async(coro):
 
 
 # =========================================================
-# AUTH STATE
+# SECURITY
 # =========================================================
 
 ADMIN_ID = None
+
+
+# =========================================================
+# LOGIN STATE
+# =========================================================
 
 phone_number = None
 
@@ -92,14 +111,19 @@ waiting_password = False
 
 
 # =========================================================
-# TELEGRAM FUNCTIONS
+# TELETHON CONNECTION
 # =========================================================
 
 async def connect_client():
 
     if not client.is_connected():
+
         await client.connect()
 
+
+# =========================================================
+# CHECK LOGIN
+# =========================================================
 
 async def is_logged_in():
 
@@ -108,14 +132,27 @@ async def is_logged_in():
     return await client.is_user_authorized()
 
 
+# =========================================================
+# SEND LOGIN CODE
+# =========================================================
+
 async def send_login_code(phone):
 
     await connect_client()
 
-    return await client.send_code_request(phone)
+    return await client.send_code_request(
+        phone
+    )
 
 
-async def login_with_code(phone, code):
+# =========================================================
+# LOGIN WITH CODE
+# =========================================================
+
+async def login_with_code(
+    phone,
+    code
+):
 
     try:
 
@@ -135,7 +172,13 @@ async def login_with_code(phone, code):
         return f"ERROR:{e}"
 
 
-async def login_with_password(password):
+# =========================================================
+# LOGIN WITH 2FA
+# =========================================================
+
+async def login_with_password(
+    password
+):
 
     try:
 
@@ -172,7 +215,7 @@ async def get_groups():
 
 
 # =========================================================
-# CHECK IF USER IS ADMIN / CREATOR
+# CHECK ADMIN / CREATOR
 # =========================================================
 
 async def is_admin_or_creator(entity):
@@ -186,135 +229,186 @@ async def is_admin_or_creator(entity):
             me
         )
 
-        # منشئ المجموعة
+        # صاحب / منشئ المجموعة
         if isinstance(
             participant,
             ChannelParticipantCreator
         ):
+
             return True
 
-        # أدمن / مشرف
+        # مشرف / أدمن
         if isinstance(
             participant,
             ChannelParticipantAdmin
         ):
+
             return True
 
         return False
 
-    except Exception:
+    except Exception as e:
 
-        # إذا تعذر معرفة الصلاحية
-        # نعتبره عضوًا عاديًا للحذر من تركه
-        return False
+        print(
+            f"Could not check permissions: {e}"
+        )
+
+        # حماية إضافية:
+        # إذا لم نستطع معرفة الصلاحية
+        # لا نخرج الحساب من المجموعة.
+        return True
 
 
 # =========================================================
-# LEAVE NORMAL MEMBER GROUPS
+# ANALYZE GROUPS
 # =========================================================
 
-async def leave_normal_groups():
+async def analyze_groups():
 
     await connect_client()
 
     dialogs = await client.get_dialogs()
 
-    total_groups = 0
-    protected_groups = 0
-    left_groups = 0
-    failed_groups = 0
+    total = 0
+    normal = 0
+    protected = 0
 
-    protected_names = []
-    left_names = []
-    failed_names = []
+    normal_groups = []
+    protected_groups = []
 
     for dialog in dialogs:
 
-        # المجموعات فقط
         if not dialog.is_group:
             continue
 
-        total_groups += 1
+        total += 1
 
         title = dialog.name or "بدون اسم"
 
-        # -----------------------------------------
-        # CHECK ADMIN / CREATOR
-        # -----------------------------------------
-
-        protected = await is_admin_or_creator(
+        is_protected = await is_admin_or_creator(
             dialog.entity
         )
 
-        if protected:
+        if is_protected:
 
-            protected_groups += 1
+            protected += 1
 
-            protected_names.append(
-                title
+            protected_groups.append(
+                {
+                    "entity": dialog.entity,
+                    "title": title
+                }
             )
 
-            continue
+        else:
 
-        # -----------------------------------------
-        # LEAVE
-        # -----------------------------------------
+            normal += 1
+
+            normal_groups.append(
+                {
+                    "entity": dialog.entity,
+                    "title": title
+                }
+            )
+
+    return {
+        "total": total,
+        "normal": normal,
+        "protected": protected,
+        "normal_groups": normal_groups,
+        "protected_groups": protected_groups
+    }
+
+
+# =========================================================
+# LEAVE NORMAL GROUPS
+# =========================================================
+
+async def leave_normal_groups():
+
+    data = await analyze_groups()
+
+    success = 0
+    failed = 0
+
+    left_names = []
+    failed_names = []
+
+    for group in data["normal_groups"]:
+
+        entity = group["entity"]
+        title = group["title"]
 
         try:
 
             await client.delete_dialog(
-                dialog.entity
+                entity
             )
 
-            left_groups += 1
+            success += 1
 
             left_names.append(
                 title
             )
 
-            # تأخير بسيط
+            print(
+                f"LEFT: {title}"
+            )
+
             await asyncio.sleep(1)
 
         except FloodWaitError as e:
 
+            print(
+                f"FloodWait: {e.seconds} seconds"
+            )
+
+            await asyncio.sleep(
+                e.seconds
+            )
+
             try:
 
-                await asyncio.sleep(
-                    e.seconds
-                )
-
                 await client.delete_dialog(
-                    dialog.entity
+                    entity
                 )
 
-                left_groups += 1
+                success += 1
 
                 left_names.append(
                     title
                 )
 
-            except Exception:
+            except Exception as retry_error:
 
-                failed_groups += 1
+                failed += 1
 
                 failed_names.append(
                     title
                 )
 
-        except Exception:
+                print(
+                    f"FAILED AFTER RETRY: {title} | {retry_error}"
+                )
 
-            failed_groups += 1
+        except Exception as e:
+
+            failed += 1
 
             failed_names.append(
                 title
             )
 
+            print(
+                f"FAILED: {title} | {e}"
+            )
+
     return {
-        "total": total_groups,
-        "protected": protected_groups,
-        "left": left_groups,
-        "failed": failed_groups,
-        "protected_names": protected_names,
+        "total": data["total"],
+        "normal": data["normal"],
+        "protected": data["protected"],
+        "success": success,
+        "failed": failed,
         "left_names": left_names,
         "failed_names": failed_names
     }
@@ -339,8 +433,8 @@ def main_keyboard():
 
     keyboard.add(
         types.InlineKeyboardButton(
-            "🚪 خروج من كروبات العضو العادي",
-            callback_data="leave_normal"
+            "🚪 خروج من كروبات الأعضاء",
+            callback_data="leave"
         )
     )
 
@@ -359,7 +453,7 @@ def confirm_keyboard():
 
     keyboard.add(
         types.InlineKeyboardButton(
-            "🚨 نعم، نفّذ الخروج",
+            "🚨 نعم، اخرج من كروبات الأعضاء",
             callback_data="confirm_leave"
         )
     )
@@ -375,10 +469,12 @@ def confirm_keyboard():
 
 
 # =========================================================
-# START
+# /START
 # =========================================================
 
-@bot.message_handler(commands=["start"])
+@bot.message_handler(
+    commands=["start"]
+)
 def start(message):
 
     global ADMIN_ID
@@ -386,8 +482,9 @@ def start(message):
 
     user_id = message.from_user.id
 
-    # أول شخص يشغل البوت يصبح المسموح له
+    # أول مستخدم يصبح المستخدم المسموح له
     if ADMIN_ID is None:
+
         ADMIN_ID = user_id
 
     if user_id != ADMIN_ID:
@@ -409,7 +506,11 @@ def start(message):
 
         bot.send_message(
             message.chat.id,
-            f"❌ خطأ:\n<code>{e}</code>"
+            f"""
+❌ خطأ في الاتصال بحساب Telegram:
+
+<code>{e}</code>
+"""
         )
 
         return
@@ -421,9 +522,9 @@ def start(message):
         bot.send_message(
             message.chat.id,
             """
-🔐 <b>تسجيل حساب Telegram</b>
+🔐 <b>تسجيل الدخول</b>
 
-أرسل رقم هاتف الحساب الذي تريد إدارته.
+أرسل رقم هاتف حساب Telegram الذي تريد إدارة كروباته.
 
 مثال:
 
@@ -438,13 +539,15 @@ def start(message):
         """
 🤖 <b>مدير الكروبات</b>
 
-الحساب الشخصي متصل.
+الحساب الشخصي متصل بنجاح.
 
-سيتم الحفاظ على:
+🛡️ <b>لن يتم الخروج من:</b>
+
 👑 المجموعات التي أنت منشئها
 🛡️ المجموعات التي أنت مشرف/أدمن فيها
 
-وسيتم الخروج من:
+🚪 <b>سيتم الخروج فقط من:</b>
+
 👤 المجموعات التي أنت عضو عادي فيها
 """,
         reply_markup=main_keyboard()
@@ -495,9 +598,9 @@ def text_handler(message):
             bot.send_message(
                 message.chat.id,
                 """
-📩 <b>تم إرسال الكود</b>
+📩 <b>تم إرسال كود Telegram</b>
 
-أرسل كود تسجيل الدخول الذي وصلك من Telegram.
+أرسل الكود الذي وصلك.
 """
             )
 
@@ -533,7 +636,9 @@ def text_handler(message):
 
             bot.send_message(
                 message.chat.id,
-                "✅ تم تسجيل الدخول بنجاح.",
+                """
+✅ <b>تم تسجيل الدخول بنجاح</b>
+""",
                 reply_markup=main_keyboard()
             )
 
@@ -545,7 +650,7 @@ def text_handler(message):
             bot.send_message(
                 message.chat.id,
                 """
-🔐 الحساب محمي بالتحقق بخطوتين.
+🔐 حسابك يستخدم التحقق بخطوتين.
 
 أرسل كلمة مرور Telegram.
 """
@@ -556,7 +661,7 @@ def text_handler(message):
             bot.send_message(
                 message.chat.id,
                 f"""
-❌ الكود غير صحيح.
+❌ فشل تسجيل الدخول:
 
 <code>{result}</code>
 """
@@ -571,7 +676,9 @@ def text_handler(message):
     if waiting_password:
 
         result = run_async(
-            login_with_password(text)
+            login_with_password(
+                text
+            )
         )
 
         if result == "OK":
@@ -580,7 +687,9 @@ def text_handler(message):
 
             bot.send_message(
                 message.chat.id,
-                "✅ تم تسجيل الدخول بنجاح.",
+                """
+✅ <b>تم تسجيل الدخول بنجاح</b>
+""",
                 reply_markup=main_keyboard()
             )
 
@@ -589,7 +698,7 @@ def text_handler(message):
             bot.send_message(
                 message.chat.id,
                 f"""
-❌ كلمة المرور غير صحيحة.
+❌ كلمة المرور غير صحيحة:
 
 <code>{result}</code>
 """
@@ -620,7 +729,9 @@ def callback_handler(call):
 
         return
 
-    bot.answer_callback_query(call.id)
+    bot.answer_callback_query(
+        call.id
+    )
 
     # =====================================================
     # CHECK
@@ -630,36 +741,22 @@ def callback_handler(call):
 
         try:
 
-            groups = run_async(
-                get_groups()
+            data = run_async(
+                analyze_groups()
             )
-
-            normal = 0
-            protected = 0
-
-            for dialog in groups:
-
-                if run_async(
-                    is_admin_or_creator(
-                        dialog.entity
-                    )
-                ):
-                    protected += 1
-                else:
-                    normal += 1
 
             bot.edit_message_text(
                 f"""
 📊 <b>نتيجة الفحص</b>
 
-👥 مجموع الكروبات:
-<b>{len(groups)}</b>
+👥 إجمالي الكروبات:
+<b>{data["total"]}</b>
 
 👤 عضو عادي:
-<b>{normal}</b>
+<b>{data["normal"]}</b>
 
 🛡️ مشرف/أدمن أو منشئ:
-<b>{protected}</b>
+<b>{data["protected"]}</b>
 
 ✅ المشرف والمنشئ لن يتم الخروج منهما.
 """,
@@ -671,46 +768,39 @@ def callback_handler(call):
         except Exception as e:
 
             bot.edit_message_text(
-                f"❌ خطأ:\n<code>{e}</code>",
+                f"""
+❌ حدث خطأ:
+
+<code>{e}</code>
+""",
                 call.message.chat.id,
                 call.message.message_id,
                 reply_markup=main_keyboard()
             )
 
     # =====================================================
-    # LEAVE NORMAL
+    # LEAVE
     # =====================================================
 
-    elif call.data == "leave_normal":
+    elif call.data == "leave":
 
         try:
 
-            groups = run_async(
-                get_groups()
+            data = run_async(
+                analyze_groups()
             )
 
-            normal = 0
-            protected = 0
-
-            for dialog in groups:
-
-                if run_async(
-                    is_admin_or_creator(
-                        dialog.entity
-                    )
-                ):
-                    protected += 1
-                else:
-                    normal += 1
-
-            if normal == 0:
+            if data["normal"] == 0:
 
                 bot.edit_message_text(
                     f"""
-✅ <b>لا يوجد كروبات للخروج منها.</b>
+✅ <b>لا يوجد كروبات عضو عادي فيها.</b>
 
-👥 إجمالي الكروبات: {len(groups)}
-🛡️ المحمية: {protected}
+👥 إجمالي الكروبات:
+<b>{data["total"]}</b>
+
+🛡️ المحمية:
+<b>{data["protected"]}</b>
 """,
                     call.message.chat.id,
                     call.message.message_id,
@@ -723,13 +813,14 @@ def callback_handler(call):
                 f"""
 ⚠️ <b>تأكيد العملية</b>
 
-👤 كروبات العضو العادي:
-<b>{normal}</b>
+👤 كروبات سيتم الخروج منها:
+<b>{data["normal"]}</b>
 
-🛡️ كروباتك كمنشئ/مشرف:
-<b>{protected}</b>
+🛡️ كروبات سيتم الحفاظ عليها:
+<b>{data["protected"]}</b>
 
-الكروبات التي أنت فيها كمنشئ أو مشرف <b>لن يتم لمسها</b>.
+👑 المنشئ محفوظ.
+🛡️ المشرف محفوظ.
 
 هل تريد المتابعة؟
 """,
@@ -741,7 +832,11 @@ def callback_handler(call):
         except Exception as e:
 
             bot.edit_message_text(
-                f"❌ خطأ:\n<code>{e}</code>",
+                f"""
+❌ حدث خطأ:
+
+<code>{e}</code>
+""",
                 call.message.chat.id,
                 call.message.message_id,
                 reply_markup=main_keyboard()
@@ -755,11 +850,12 @@ def callback_handler(call):
 
         bot.edit_message_text(
             """
-🚪 <b>جاري فحص الكروبات والخروج من كروبات العضو العادي...</b>
+🚪 <b>جاري الفحص...</b>
 
-🛡️ المشرف والمنشئ سيتم الحفاظ عليهم.
-"""
-        ,
+سيتم الخروج فقط من المجموعات التي أنت فيها كعضو عادي.
+
+🛡️ المنشئ والمشرف لن يتم لمسهم.
+""",
             call.message.chat.id,
             call.message.message_id
         )
@@ -778,15 +874,16 @@ def callback_handler(call):
 <b>{result["total"]}</b>
 
 🚪 تم الخروج من:
-<b>{result["left"]}</b>
+<b>{result["success"]}</b>
 
 🛡️ تم الحفاظ على:
 <b>{result["protected"]}</b>
 
-❌ فشل الخروج من:
+❌ فشل:
 <b>{result["failed"]}</b>
 
-👑 المنشئ والمشرف لم يتم الخروج منهم.
+👑 كروبات المنشئ محفوظة.
+🛡️ كروبات المشرف محفوظة.
 """,
                 call.message.chat.id,
                 call.message.message_id,
@@ -797,7 +894,7 @@ def callback_handler(call):
 
             bot.edit_message_text(
                 f"""
-❌ حدث خطأ أثناء العملية:
+❌ حدث خطأ أثناء الخروج:
 
 <code>{e}</code>
 """,
@@ -823,11 +920,34 @@ def callback_handler(call):
 
 
 # =========================================================
-# RUN
+# DELETE WEBHOOK
+# =========================================================
+
+print("🧹 Removing Telegram webhook...")
+
+try:
+
+    bot.remove_webhook()
+
+    time.sleep(2)
+
+    print("✅ Webhook removed.")
+
+except Exception as e:
+
+    print(
+        f"⚠️ Could not remove webhook: {e}"
+    )
+
+
+# =========================================================
+# START BOT
 # =========================================================
 
 print("🤖 Bot is running...")
 
 bot.infinity_polling(
-    skip_pending=True
+    skip_pending=True,
+    timeout=60,
+    long_polling_timeout=60
             )
