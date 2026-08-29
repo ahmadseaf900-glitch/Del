@@ -1,12 +1,19 @@
 import os
-import time
 import asyncio
 import threading
 
 import telebot
 from telebot import types
+
 from telethon import TelegramClient
-from telethon.errors import SessionPasswordNeededError, FloodWaitError
+from telethon.errors import (
+    SessionPasswordNeededError,
+    FloodWaitError
+)
+from telethon.tl.types import (
+    ChannelParticipantAdmin,
+    ChannelParticipantCreator
+)
 
 
 # =========================================================
@@ -38,7 +45,7 @@ bot = telebot.TeleBot(
 
 
 # =========================================================
-# TELETHON LOOP
+# TELETHON
 # =========================================================
 
 telegram_loop = asyncio.new_event_loop()
@@ -108,7 +115,7 @@ async def send_login_code(phone):
     return await client.send_code_request(phone)
 
 
-async def login_code(phone, code):
+async def login_with_code(phone, code):
 
     try:
 
@@ -128,7 +135,7 @@ async def login_code(phone, code):
         return f"ERROR:{e}"
 
 
-async def login_password(password):
+async def login_with_password(password):
 
     try:
 
@@ -143,7 +150,11 @@ async def login_password(password):
         return f"ERROR:{e}"
 
 
-async def get_all_groups():
+# =========================================================
+# GET GROUPS
+# =========================================================
+
+async def get_groups():
 
     await connect_client()
 
@@ -153,7 +164,6 @@ async def get_all_groups():
 
     for dialog in dialogs:
 
-        # المجموعات فقط
         if dialog.is_group:
 
             groups.append(dialog)
@@ -161,37 +171,105 @@ async def get_all_groups():
     return groups
 
 
-async def leave_all_groups():
+# =========================================================
+# CHECK IF USER IS ADMIN / CREATOR
+# =========================================================
+
+async def is_admin_or_creator(entity):
+
+    try:
+
+        me = await client.get_me()
+
+        participant = await client.get_participant(
+            entity,
+            me
+        )
+
+        # منشئ المجموعة
+        if isinstance(
+            participant,
+            ChannelParticipantCreator
+        ):
+            return True
+
+        # أدمن / مشرف
+        if isinstance(
+            participant,
+            ChannelParticipantAdmin
+        ):
+            return True
+
+        return False
+
+    except Exception:
+
+        # إذا تعذر معرفة الصلاحية
+        # نعتبره عضوًا عاديًا للحذر من تركه
+        return False
+
+
+# =========================================================
+# LEAVE NORMAL MEMBER GROUPS
+# =========================================================
+
+async def leave_normal_groups():
 
     await connect_client()
 
     dialogs = await client.get_dialogs()
 
-    groups = [
-        dialog
-        for dialog in dialogs
-        if dialog.is_group
-    ]
+    total_groups = 0
+    protected_groups = 0
+    left_groups = 0
+    failed_groups = 0
 
-    success = 0
-    failed = 0
+    protected_names = []
+    left_names = []
+    failed_names = []
 
-    results = []
+    for dialog in dialogs:
 
-    for dialog in groups:
+        # المجموعات فقط
+        if not dialog.is_group:
+            continue
+
+        total_groups += 1
+
+        title = dialog.name or "بدون اسم"
+
+        # -----------------------------------------
+        # CHECK ADMIN / CREATOR
+        # -----------------------------------------
+
+        protected = await is_admin_or_creator(
+            dialog.entity
+        )
+
+        if protected:
+
+            protected_groups += 1
+
+            protected_names.append(
+                title
+            )
+
+            continue
+
+        # -----------------------------------------
+        # LEAVE
+        # -----------------------------------------
 
         try:
-
-            title = dialog.name or "بدون اسم"
 
             await client.delete_dialog(
                 dialog.entity
             )
 
-            success += 1
+            left_groups += 1
 
-            results.append(
-                f"✅ {title}"
+            left_names.append(
+                title
             )
 
             # تأخير بسيط
@@ -199,72 +277,90 @@ async def leave_all_groups():
 
         except FloodWaitError as e:
 
-            wait_time = e.seconds
-
-            results.append(
-                f"⏳ FloodWait: انتظار {wait_time} ثانية"
-            )
-
-            await asyncio.sleep(
-                wait_time
-            )
-
             try:
+
+                await asyncio.sleep(
+                    e.seconds
+                )
 
                 await client.delete_dialog(
                     dialog.entity
                 )
 
-                success += 1
+                left_groups += 1
+
+                left_names.append(
+                    title
+                )
 
             except Exception:
 
-                failed += 1
+                failed_groups += 1
 
-        except Exception as e:
+                failed_names.append(
+                    title
+                )
 
-            failed += 1
+        except Exception:
 
-            results.append(
-                f"❌ {dialog.name}: {e}"
+            failed_groups += 1
+
+            failed_names.append(
+                title
             )
 
-    return success, failed, results
+    return {
+        "total": total_groups,
+        "protected": protected_groups,
+        "left": left_groups,
+        "failed": failed_groups,
+        "protected_names": protected_names,
+        "left_names": left_names,
+        "failed_names": failed_names
+    }
 
 
 # =========================================================
-# KEYBOARD
+# MAIN KEYBOARD
 # =========================================================
 
 def main_keyboard():
 
-    keyboard = types.InlineKeyboardMarkup()
+    keyboard = types.InlineKeyboardMarkup(
+        row_width=1
+    )
 
     keyboard.add(
         types.InlineKeyboardButton(
-            "🚨 خروج من جميع الكروبات",
-            callback_data="leave_all"
+            "📊 فحص الكروبات",
+            callback_data="check"
         )
     )
 
     keyboard.add(
         types.InlineKeyboardButton(
-            "📊 عدد الكروبات",
-            callback_data="count"
+            "🚪 خروج من كروبات العضو العادي",
+            callback_data="leave_normal"
         )
     )
 
     return keyboard
 
 
+# =========================================================
+# CONFIRM KEYBOARD
+# =========================================================
+
 def confirm_keyboard():
 
-    keyboard = types.InlineKeyboardMarkup()
+    keyboard = types.InlineKeyboardMarkup(
+        row_width=1
+    )
 
     keyboard.add(
         types.InlineKeyboardButton(
-            "🚨 نعم، اخرج من الكل",
-            callback_data="confirm_leave_all"
+            "🚨 نعم، نفّذ الخروج",
+            callback_data="confirm_leave"
         )
     )
 
@@ -290,7 +386,7 @@ def start(message):
 
     user_id = message.from_user.id
 
-    # أول مستخدم يصبح الأدمن
+    # أول شخص يشغل البوت يصبح المسموح له
     if ADMIN_ID is None:
         ADMIN_ID = user_id
 
@@ -313,7 +409,7 @@ def start(message):
 
         bot.send_message(
             message.chat.id,
-            f"❌ خطأ في الاتصال:\n<code>{e}</code>"
+            f"❌ خطأ:\n<code>{e}</code>"
         )
 
         return
@@ -327,7 +423,7 @@ def start(message):
             """
 🔐 <b>تسجيل حساب Telegram</b>
 
-أرسل رقم هاتف الحساب الذي تريد إخراجه من الكروبات.
+أرسل رقم هاتف الحساب الذي تريد إدارته.
 
 مثال:
 
@@ -342,19 +438,26 @@ def start(message):
         """
 🤖 <b>مدير الكروبات</b>
 
-حسابك متصل بنجاح.
+الحساب الشخصي متصل.
 
-اختر العملية:
+سيتم الحفاظ على:
+👑 المجموعات التي أنت منشئها
+🛡️ المجموعات التي أنت مشرف/أدمن فيها
+
+وسيتم الخروج من:
+👤 المجموعات التي أنت عضو عادي فيها
 """,
         reply_markup=main_keyboard()
     )
 
 
 # =========================================================
-# TEXT
+# TEXT HANDLER
 # =========================================================
 
-@bot.message_handler(content_types=["text"])
+@bot.message_handler(
+    content_types=["text"]
+)
 def text_handler(message):
 
     global phone_number
@@ -381,7 +484,9 @@ def text_handler(message):
         try:
 
             run_async(
-                send_login_code(phone_number)
+                send_login_code(
+                    phone_number
+                )
             )
 
             waiting_phone = False
@@ -401,7 +506,7 @@ def text_handler(message):
             bot.send_message(
                 message.chat.id,
                 f"""
-❌ لم أستطع إرسال الكود.
+❌ فشل إرسال الكود:
 
 <code>{e}</code>
 """
@@ -416,7 +521,7 @@ def text_handler(message):
     if waiting_code:
 
         result = run_async(
-            login_code(
+            login_with_code(
                 phone_number,
                 text
             )
@@ -428,11 +533,7 @@ def text_handler(message):
 
             bot.send_message(
                 message.chat.id,
-                """
-✅ <b>تم تسجيل الدخول</b>
-
-يمكنك الآن التحكم بالحساب.
-""",
+                "✅ تم تسجيل الدخول بنجاح.",
                 reply_markup=main_keyboard()
             )
 
@@ -444,7 +545,7 @@ def text_handler(message):
             bot.send_message(
                 message.chat.id,
                 """
-🔐 حسابك محمي بالتحقق بخطوتين.
+🔐 الحساب محمي بالتحقق بخطوتين.
 
 أرسل كلمة مرور Telegram.
 """
@@ -464,13 +565,13 @@ def text_handler(message):
         return
 
     # =====================================================
-    # 2FA PASSWORD
+    # 2FA
     # =====================================================
 
     if waiting_password:
 
         result = run_async(
-            login_password(text)
+            login_with_password(text)
         )
 
         if result == "OK":
@@ -479,9 +580,7 @@ def text_handler(message):
 
             bot.send_message(
                 message.chat.id,
-                """
-✅ <b>تم تسجيل الدخول بنجاح</b>
-""",
+                "✅ تم تسجيل الدخول بنجاح.",
                 reply_markup=main_keyboard()
             )
 
@@ -500,7 +599,7 @@ def text_handler(message):
 
 
 # =========================================================
-# CALLBACK
+# CALLBACK HANDLER
 # =========================================================
 
 @bot.callback_query_handler(
@@ -524,94 +623,170 @@ def callback_handler(call):
     bot.answer_callback_query(call.id)
 
     # =====================================================
-    # LEAVE ALL
+    # CHECK
     # =====================================================
 
-    if call.data == "leave_all":
+    if call.data == "check":
 
         try:
 
             groups = run_async(
-                get_all_groups()
+                get_groups()
             )
 
-            count = len(groups)
+            normal = 0
+            protected = 0
 
-        except Exception as e:
+            for dialog in groups:
+
+                if run_async(
+                    is_admin_or_creator(
+                        dialog.entity
+                    )
+                ):
+                    protected += 1
+                else:
+                    normal += 1
 
             bot.edit_message_text(
-                f"❌ خطأ:\n<code>{e}</code>",
-                call.message.chat.id,
-                call.message.message_id
-            )
+                f"""
+📊 <b>نتيجة الفحص</b>
 
-            return
+👥 مجموع الكروبات:
+<b>{len(groups)}</b>
 
-        if count == 0:
+👤 عضو عادي:
+<b>{normal}</b>
 
-            bot.edit_message_text(
-                """
-📭 <b>لا يوجد كروبات</b>
+🛡️ مشرف/أدمن أو منشئ:
+<b>{protected}</b>
 
-حسابك لا يوجد فيه أي مجموعة.
+✅ المشرف والمنشئ لن يتم الخروج منهما.
 """,
                 call.message.chat.id,
                 call.message.message_id,
                 reply_markup=main_keyboard()
             )
 
-            return
+        except Exception as e:
 
-        bot.edit_message_text(
-            f"""
-⚠️ <b>تحذير</b>
+            bot.edit_message_text(
+                f"❌ خطأ:\n<code>{e}</code>",
+                call.message.chat.id,
+                call.message.message_id,
+                reply_markup=main_keyboard()
+            )
 
-تم العثور على:
+    # =====================================================
+    # LEAVE NORMAL
+    # =====================================================
 
-<b>{count}</b> كروب
+    elif call.data == "leave_normal":
 
-إذا أكدت، سيخرج حسابك الشخصي من <b>جميع الكروبات</b>.
+        try:
 
-هذه العملية لا يمكن التراجع عنها تلقائيًا.
+            groups = run_async(
+                get_groups()
+            )
+
+            normal = 0
+            protected = 0
+
+            for dialog in groups:
+
+                if run_async(
+                    is_admin_or_creator(
+                        dialog.entity
+                    )
+                ):
+                    protected += 1
+                else:
+                    normal += 1
+
+            if normal == 0:
+
+                bot.edit_message_text(
+                    f"""
+✅ <b>لا يوجد كروبات للخروج منها.</b>
+
+👥 إجمالي الكروبات: {len(groups)}
+🛡️ المحمية: {protected}
 """,
-            call.message.chat.id,
-            call.message.message_id,
-            reply_markup=confirm_keyboard()
-        )
+                    call.message.chat.id,
+                    call.message.message_id,
+                    reply_markup=main_keyboard()
+                )
+
+                return
+
+            bot.edit_message_text(
+                f"""
+⚠️ <b>تأكيد العملية</b>
+
+👤 كروبات العضو العادي:
+<b>{normal}</b>
+
+🛡️ كروباتك كمنشئ/مشرف:
+<b>{protected}</b>
+
+الكروبات التي أنت فيها كمنشئ أو مشرف <b>لن يتم لمسها</b>.
+
+هل تريد المتابعة؟
+""",
+                call.message.chat.id,
+                call.message.message_id,
+                reply_markup=confirm_keyboard()
+            )
+
+        except Exception as e:
+
+            bot.edit_message_text(
+                f"❌ خطأ:\n<code>{e}</code>",
+                call.message.chat.id,
+                call.message.message_id,
+                reply_markup=main_keyboard()
+            )
 
     # =====================================================
     # CONFIRM
     # =====================================================
 
-    elif call.data == "confirm_leave_all":
+    elif call.data == "confirm_leave":
 
         bot.edit_message_text(
             """
-🚪 <b>جاري الخروج من الكروبات...</b>
+🚪 <b>جاري فحص الكروبات والخروج من كروبات العضو العادي...</b>
 
-يرجى الانتظار.
-""",
+🛡️ المشرف والمنشئ سيتم الحفاظ عليهم.
+"""
+        ,
             call.message.chat.id,
             call.message.message_id
         )
 
         try:
 
-            success, failed, results = run_async(
-                leave_all_groups()
+            result = run_async(
+                leave_normal_groups()
             )
 
             bot.edit_message_text(
                 f"""
 ✅ <b>اكتملت العملية</b>
 
-🚪 خرج من الكروبات:
-<b>{success}</b>
+👥 إجمالي الكروبات:
+<b>{result["total"]}</b>
 
-❌ فشل:
-<b>{failed}</b>
+🚪 تم الخروج من:
+<b>{result["left"]}</b>
 
-📌 القنوات والمحادثات الخاصة لم يتم لمسها.
+🛡️ تم الحفاظ على:
+<b>{result["protected"]}</b>
+
+❌ فشل الخروج من:
+<b>{result["failed"]}</b>
+
+👑 المنشئ والمشرف لم يتم الخروج منهم.
 """,
                 call.message.chat.id,
                 call.message.message_id,
@@ -632,41 +807,6 @@ def callback_handler(call):
             )
 
     # =====================================================
-    # COUNT
-    # =====================================================
-
-    elif call.data == "count":
-
-        try:
-
-            groups = run_async(
-                get_all_groups()
-            )
-
-            count = len(groups)
-
-            bot.edit_message_text(
-                f"""
-📊 <b>إحصائيات الحساب</b>
-
-👥 عدد الكروبات:
-<b>{count}</b>
-""",
-                call.message.chat.id,
-                call.message.message_id,
-                reply_markup=main_keyboard()
-            )
-
-        except Exception as e:
-
-            bot.edit_message_text(
-                f"❌ خطأ:\n<code>{e}</code>",
-                call.message.chat.id,
-                call.message.message_id,
-                reply_markup=main_keyboard()
-            )
-
-    # =====================================================
     # CANCEL
     # =====================================================
 
@@ -674,7 +814,7 @@ def callback_handler(call):
 
         bot.edit_message_text(
             """
-❌ <b>تم إلغاء العملية</b>
+❌ <b>تم إلغاء العملية.</b>
 """,
             call.message.chat.id,
             call.message.message_id,
@@ -686,8 +826,8 @@ def callback_handler(call):
 # RUN
 # =========================================================
 
-print("🤖 Bot started...")
+print("🤖 Bot is running...")
 
 bot.infinity_polling(
     skip_pending=True
-  )
+            )
